@@ -354,7 +354,12 @@ class TrafficLight(QWidget):
     def _install_hooks(self):
         """安装 Claude Code hooks"""
         import subprocess
-        hook_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hooks", "setup-hooks.py")
+        # 支持 PyInstaller 打包和开发模式
+        if getattr(sys, 'frozen', False):
+            base = os.path.dirname(sys.executable)
+        else:
+            base = os.path.dirname(os.path.abspath(__file__))
+        hook_script = os.path.join(base, "hooks", "setup-hooks.py")
         if os.path.exists(hook_script):
             result = subprocess.run(
                 [sys.executable, hook_script],
@@ -362,13 +367,13 @@ class TrafficLight(QWidget):
             )
             if result.returncode == 0:
                 from PyQt5.QtWidgets import QMessageBox
-                QMessageBox.information(self, "Hook 安装", result.stdout)
+                QMessageBox.information(self, "Hook", result.stdout)
             else:
                 from PyQt5.QtWidgets import QMessageBox
-                QMessageBox.warning(self, "Hook 安装失败", result.stderr)
+                QMessageBox.warning(self, "Error", result.stderr)
         else:
             from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "错误", f"找不到 hook 脚本:\n{hook_script}")
+            QMessageBox.warning(self, "Error", "hook script not found: " + hook_script)
 
     def _quit(self):
         self._tray.hide()
