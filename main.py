@@ -5,6 +5,8 @@ Claude Traffic Light - Claude Code 运行状态桌面红绿灯
 
 import sys
 import os
+import json
+import shutil
 import psutil
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QSystemTrayIcon, QMenu, QAction,
@@ -354,26 +356,55 @@ class TrafficLight(QWidget):
     def _install_hooks(self):
         """安装 Claude Code hooks"""
         import subprocess
-        # 支持 PyInstaller 打包和开发模式
+        # 找到源 hook 脚本
         if getattr(sys, 'frozen', False):
-            base = os.path.dirname(sys.executable)
+            base = sys._MEIPASS
         else:
             base = os.path.dirname(os.path.abspath(__file__))
-        hook_script = os.path.join(base, "hooks", "setup-hooks.py")
-        if os.path.exists(hook_script):
-            result = subprocess.run(
-                [sys.executable, hook_script],
-                capture_output=True, text=True
-            )
-            if result.returncode == 0:
-                from PyQt5.QtWidgets import QMessageBox
-                QMessageBox.information(self, "Hook", result.stdout)
-            else:
-                from PyQt5.QtWidgets import QMessageBox
-                QMessageBox.warning(self, "Error", result.stderr)
-        else:
+        src_hook = os.path.join(base, "hooks", "claude-status-hook.py")
+        setup_script = os.path.join(base, "hooks", "setup-hooks.py")
+
+        if not os.path.exists(src_hook) or not os.path.exists(setup_script):
             from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Error", "hook script not found: " + hook_script)
+            QMessageBox.warning(self, "Error", "hook files not found in: " + base)
+            return
+
+        # 复制 hook 脚本到 ~/.claude/hooks/ 持久化
+        persistent_dir = os.path.join(os.path.expanduser("~"), ".claude", "hooks")
+        os.makedirs(persistent_dir, exist_ok=True)
+        import shutil
+        persistent_hook = os.path.join(persistent_dir, "claude-status-hook.py")
+        shutil.copy2(src_hook, persistent_hook)
+
+        # 直接写入 settings.json
+        settings_file = os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
+        settings = {}
+        if os.path.exists(settings_file):
+            with open(settings_file, "r", encoding="utf-8") as f:
+                settings = json.loads(f.read())
+
+        cmd = f"python -X utf8 \"{persistent_hook}\""
+        def make_hook(matcher=None):
+            g = {"hooks": [{"type": "command", "command": cmd}]}
+            if matcher:
+                g["matcher"] = matcher
+            return g
+
+        settings["hooks"] = {
+            "PreToolUse":       [make_hook("*")],
+            "PostToolUse":      [make_hook("*")],
+            "UserPromptSubmit": [make_hook()],
+            "Stop":             [make_hook()],
+            "StopFailure":      [make_hook()],
+            "SessionStart":     [make_hook()],
+            "SessionEnd":       [make_hook()],
+        }
+
+        with open(settings_file, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2, ensure_ascii=False)
+
+        from PyQt5.QtWidgets import QMessageBox
+        QMessageBox.information(self, "Hook", "Done! Restart Claude Code.")
 
     def _quit(self):
         self._tray.hide()
