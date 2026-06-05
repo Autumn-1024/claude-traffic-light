@@ -87,6 +87,7 @@ class TrafficLight(QWidget):
         super().__init__()
         self._status = Status.OFFLINE
         self._light_size = 36
+        self._horizontal = False  # False=竖向, True=横向
         self._drag_pos = QPoint()
         self._always_on_top = True
 
@@ -101,8 +102,13 @@ class TrafficLight(QWidget):
 
     def _update_size(self):
         ls = self._light_size
-        w = ls * 2 + 20
-        h = ls * 3 + 30
+        margin = ls // 3
+        if self._horizontal:
+            w = ls * 3 + margin * 4
+            h = ls * 2 + 20
+        else:
+            w = ls * 2 + 20
+            h = ls * 3 + margin * 4
         self.setFixedSize(w, h)
 
     # ── 绘制 ───────────────────────────────────────────────
@@ -112,13 +118,16 @@ class TrafficLight(QWidget):
 
         w, h = self.width(), self.height()
         ls = self._light_size
-        cx = w // 2
         margin = ls // 3
 
         # 灯箱背景
-        box_w = ls * 2 + 12
-        box_h = ls * 3 + margin * 4
-        box_x = cx - box_w // 2
+        if self._horizontal:
+            box_w = ls * 3 + margin * 4
+            box_h = ls * 2 + 12
+        else:
+            box_w = ls * 2 + 12
+            box_h = ls * 3 + margin * 4
+        box_x = w // 2 - box_w // 2
         box_y = h // 2 - box_h // 2
         p.setBrush(QBrush(QColor(40, 40, 40, 220)))
         p.setPen(QPen(QColor(60, 60, 60), 1))
@@ -127,9 +136,14 @@ class TrafficLight(QWidget):
         # 三个灯
         for i, status in enumerate(self.LIGHT_ORDER):
             color = self.COLORS[status]
-            lx = cx
-            ly = box_y + margin + ls // 2 + i * (ls + margin)
             r = ls // 2
+
+            if self._horizontal:
+                lx = box_x + margin + ls // 2 + i * (ls + margin)
+                ly = h // 2
+            else:
+                lx = w // 2
+                ly = box_y + margin + ls // 2 + i * (ls + margin)
 
             if self._status == status:
                 # 亮灯
@@ -235,6 +249,17 @@ class TrafficLight(QWidget):
             }
         """)
 
+        # 方向
+        orient_menu = menu.addMenu("方向")
+        v_act = orient_menu.addAction("竖向")
+        v_act.setCheckable(True)
+        v_act.setChecked(not self._horizontal)
+        v_act.triggered.connect(lambda: self._set_orientation(False))
+        h_act = orient_menu.addAction("横向")
+        h_act.setCheckable(True)
+        h_act.setChecked(self._horizontal)
+        h_act.triggered.connect(lambda: self._set_orientation(True))
+
         # 灯大小子菜单
         size_menu = menu.addMenu("灯大小")
         for size in [24, 32, 36, 48, 64]:
@@ -268,6 +293,11 @@ class TrafficLight(QWidget):
 
     def _set_light_size(self, size):
         self._light_size = size
+        self._update_size()
+        self.update()
+
+    def _set_orientation(self, horizontal):
+        self._horizontal = horizontal
         self._update_size()
         self.update()
 
