@@ -396,6 +396,7 @@ class TrafficLight(QWidget):
             "UserPromptSubmit": [make_hook()],
             "Stop":             [make_hook()],
             "StopFailure":      [make_hook()],
+            "PermissionRequest": [make_hook()],
             "SessionStart":     [make_hook()],
             "SessionEnd":       [make_hook()],
         }

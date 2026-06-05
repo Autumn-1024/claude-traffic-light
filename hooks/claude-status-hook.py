@@ -24,6 +24,8 @@ def main():
         write_status("running")
     elif event in ("Stop", "StopFailure"):
         write_status("ready")
+    elif event in ("PermissionRequest", "Elicitation"):
+        write_status("waiting")
     elif event == "SessionEnd":
         write_status("offline")
     elif event == "SessionStart":
