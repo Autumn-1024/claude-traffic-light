@@ -4,6 +4,7 @@ Claude Traffic Light - Claude Code 运行状态桌面红绿灯
 """
 
 import sys
+import time
 import psutil
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QSystemTrayIcon, QMenu, QAction,
@@ -23,20 +24,30 @@ class Status:
     OFFLINE = "offline"
 
 
-# ── Claude 进程检测 ─────────────────────────────────────────
+# ── Claude 进程检测（带防抖和滞后） ─────────────────────────
 class ClaudeDetector:
     def __init__(self):
-        self._cpu_samples = []
-        self._sample_count = 5
-        self._running_threshold = 5.0
-        self._waiting_threshold = 1.0
+        self._cpu_samples = []          # CPU 采样窗口
+        self._sample_count = 15         # 采样数量
+        self._current_status = Status.OFFLINE
+        self._last_switch_time = 0.0    # 上次状态切换时间
+        self._cooldown_sec = 3.0        # 切换冷却（秒）
+        # 滞后阈值：防止在边界来回跳
+        # 进入 RUNNING 需要 CPU > _enter_running，退出 RUNNING 需要 CPU < _exit_running
+        self._enter_running = 6.0
+        self._exit_running = 2.0
+        # 进入 WAITING 需要 CPU < _enter_waiting，退出 WAITING 需要 CPU > _exit_waiting
+        self._enter_waiting = 1.0
+        self._exit_waiting = 3.0
 
     def detect(self) -> str:
         procs = self._find_claude_processes()
         if not procs:
             self._cpu_samples.clear()
+            self._current_status = Status.OFFLINE
             return Status.OFFLINE
 
+        # 采集 CPU
         total_cpu = 0.0
         for proc in procs:
             try:
@@ -48,16 +59,47 @@ class ClaudeDetector:
         if len(self._cpu_samples) > self._sample_count:
             self._cpu_samples.pop(0)
 
-        avg_cpu = sum(self._cpu_samples) / len(self._cpu_samples)
+        # 加权移动平均：近期权重更高
+        weights = [i + 1 for i in range(len(self._cpu_samples))]
+        weighted_avg = sum(s * w for s, w in zip(self._cpu_samples, weights)) / sum(weights)
 
-        if avg_cpu > self._running_threshold:
-            return Status.RUNNING
-        elif len(self._cpu_samples) < 3:
-            return Status.WAITING
-        elif avg_cpu < self._waiting_threshold:
-            return Status.WAITING
+        # 采样不够时保持当前状态
+        if len(self._cpu_samples) < 3:
+            return self._current_status
+
+        # 冷却期内不切换
+        now = time.time()
+        if now - self._last_switch_time < self._cooldown_sec:
+            return self._current_status
+
+        # 状态决策（带滞后）
+        new_status = self._current_status
+
+        if self._current_status == Status.RUNNING:
+            # 运行中 → CPU 降到 _exit_running 以下才考虑切换
+            if weighted_avg < self._exit_running:
+                new_status = Status.WAITING
+        elif self._current_status == Status.WAITING:
+            # 等待中 → CPU 升到 _exit_waiting 以上才切运行，否则保持
+            if weighted_avg > self._exit_waiting:
+                new_status = Status.RUNNING
+            elif weighted_avg > self._enter_waiting:
+                new_status = Status.READY
+        elif self._current_status == Status.READY:
+            # 就绪 → CPU 高了切运行，低了切等待
+            if weighted_avg > self._enter_running:
+                new_status = Status.RUNNING
+            elif weighted_avg < self._enter_waiting:
+                new_status = Status.WAITING
         else:
-            return Status.READY
+            # OFFLINE → 采样够了就进 WAITING
+            new_status = Status.WAITING
+
+        if new_status != self._current_status:
+            self._current_status = new_status
+            self._last_switch_time = now
+
+        return self._current_status
 
     def _find_claude_processes(self) -> list:
         procs = []
