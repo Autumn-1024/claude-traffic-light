@@ -7,7 +7,7 @@ import sys
 import psutil
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QSystemTrayIcon, QMenu, QAction,
-    QSlider, QDialog, QVBoxLayout, QLabel, QCheckBox
+    QSlider, QDialog, QVBoxLayout, QLabel, QCheckBox, QWidgetAction
 )
 from PyQt5.QtCore import Qt, QTimer, QPoint
 from PyQt5.QtGui import (
@@ -119,41 +119,25 @@ class TrafficLight(QWidget):
         w, h = self.width(), self.height()
         ls = self._light_size
         margin = ls // 3
+        r = ls // 2
 
-        # 灯箱背景
-        if self._horizontal:
-            box_w = ls * 3 + margin * 4
-            box_h = ls * 2 + 12
-        else:
-            box_w = ls * 2 + 12
-            box_h = ls * 3 + margin * 4
-        box_x = w // 2 - box_w // 2
-        box_y = h // 2 - box_h // 2
-        p.setBrush(QBrush(QColor(40, 40, 40, 220)))
-        p.setPen(QPen(QColor(60, 60, 60), 1))
-        p.drawRoundedRect(box_x, box_y, box_w, box_h, 10, 10)
-
-        # 三个灯
         for i, status in enumerate(self.LIGHT_ORDER):
             color = self.COLORS[status]
-            r = ls // 2
 
             if self._horizontal:
-                lx = box_x + margin + ls // 2 + i * (ls + margin)
+                lx = margin + r + i * (ls + margin)
                 ly = h // 2
             else:
                 lx = w // 2
-                ly = box_y + margin + ls // 2 + i * (ls + margin)
+                ly = margin + r + i * (ls + margin)
 
             if self._status == status:
-                # 亮灯
                 grad = QRadialGradient(lx, ly, r * 1.2)
                 grad.setColorAt(0, color.lighter(160))
                 grad.setColorAt(0.6, color)
                 grad.setColorAt(1, color.darker(200))
                 p.setBrush(QBrush(grad))
                 p.setPen(Qt.NoPen)
-                # 外发光
                 glow = QColor(color)
                 glow.setAlpha(50)
                 p.setPen(QPen(glow, 5))
@@ -260,13 +244,24 @@ class TrafficLight(QWidget):
         h_act.setChecked(self._horizontal)
         h_act.triggered.connect(lambda: self._set_orientation(True))
 
-        # 灯大小子菜单
-        size_menu = menu.addMenu("灯大小")
-        for size in [24, 32, 36, 48, 64]:
-            act = size_menu.addAction(f"{size}px")
-            act.setCheckable(size == self._light_size)
-            act.setChecked(size == self._light_size)
-            act.triggered.connect(lambda checked, s=size: self._set_light_size(s))
+        # 灯大小
+        size_label = QAction(f"灯大小: {self._light_size}px", self)
+        size_label.setEnabled(False)
+        menu.addAction(size_label)
+
+        size_slider = QSlider(Qt.Horizontal)
+        size_slider.setRange(10, 100)
+        size_slider.setValue(self._light_size)
+        size_slider.setMinimumWidth(120)
+        size_slider.setStyleSheet("""
+            QSlider { padding: 4px 8px; }
+            QSlider::groove:horizontal { background: #555; height: 4px; border-radius: 2px; }
+            QSlider::handle:horizontal { background: #4CAF50; width: 12px; margin: -4px 0; border-radius: 6px; }
+        """)
+        size_slider.valueChanged.connect(lambda v: self._set_light_size(v, size_label))
+        size_action = QWidgetAction(self)
+        size_action.setDefaultWidget(size_slider)
+        menu.addAction(size_action)
 
         # 置顶
         topmost_act = QAction("窗口置顶", self)
@@ -291,8 +286,10 @@ class TrafficLight(QWidget):
 
         menu.exec_(event.globalPos())
 
-    def _set_light_size(self, size):
+    def _set_light_size(self, size, label=None):
         self._light_size = size
+        if label:
+            label.setText(f"灯大小: {size}px")
         self._update_size()
         self.update()
 
