@@ -4,7 +4,7 @@ Claude Traffic Light - Claude Code 运行状态桌面红绿灯
 """
 
 import sys
-import time
+import os
 import psutil
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QSystemTrayIcon, QMenu, QAction,
@@ -24,30 +24,68 @@ class Status:
     OFFLINE = "offline"
 
 
-# ── Claude 进程检测（带防抖和滞后） ─────────────────────────
+# ── Claude 状态检测（Hook 文件模式 + CPU 兜底） ─────────────
 class ClaudeDetector:
+    STATUS_FILE = os.path.join(os.path.expanduser("~"), ".claude", "traffic-light-status")
+
     def __init__(self):
-        self._cpu_samples = []          # CPU 采样窗口
-        self._sample_count = 15         # 采样数量
+        self._fallback = CpuFallbackDetector()
+
+    def detect(self) -> str:
+        # 优先读 hook 写入的状态文件
+        if os.path.exists(self.STATUS_FILE):
+            try:
+                mtime = os.path.getmtime(self.STATUS_FILE)
+                import time
+                age = time.time() - mtime
+                with open(self.STATUS_FILE, "r") as f:
+                    status = f.read().strip()
+                # 文件超过 60 秒没更新，认为 Claude 已离线
+                if age > 60:
+                    return Status.OFFLINE
+                if status == "running":
+                    return Status.RUNNING
+                elif status == "ready":
+                    return Status.READY
+                elif status == "waiting":
+                    return Status.WAITING
+                elif status == "offline":
+                    return Status.OFFLINE
+            except Exception:
+                pass
+
+        # 兜底：用 CPU 检测
+        return self._fallback.detect()
+
+
+class CpuFallbackDetector:
+    """CPU 检测兜底方案"""
+    def __init__(self):
+        self._cpu_samples = []
+        self._sample_count = 15
         self._current_status = Status.OFFLINE
-        self._last_switch_time = 0.0    # 上次状态切换时间
-        self._cooldown_sec = 3.0        # 切换冷却（秒）
-        # 滞后阈值：防止在边界来回跳
-        # 进入 RUNNING 需要 CPU > _enter_running，退出 RUNNING 需要 CPU < _exit_running
         self._enter_running = 6.0
         self._exit_running = 2.0
-        # 进入 WAITING 需要 CPU < _enter_waiting，退出 WAITING 需要 CPU > _exit_waiting
         self._enter_waiting = 1.0
         self._exit_waiting = 3.0
 
     def detect(self) -> str:
-        procs = self._find_claude_processes()
+        procs = []
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                name = proc.info['name'] or ''
+                cmdline = ' '.join(proc.info['cmdline'] or [])
+                if 'claude' in (name + cmdline).lower():
+                    if 'code' not in name.lower() and 'electron' not in name.lower():
+                        procs.append(proc)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
         if not procs:
             self._cpu_samples.clear()
             self._current_status = Status.OFFLINE
             return Status.OFFLINE
 
-        # 采集 CPU
         total_cpu = 0.0
         for proc in procs:
             try:
@@ -59,60 +97,18 @@ class ClaudeDetector:
         if len(self._cpu_samples) > self._sample_count:
             self._cpu_samples.pop(0)
 
-        # 加权移动平均：近期权重更高
-        weights = [i + 1 for i in range(len(self._cpu_samples))]
-        weighted_avg = sum(s * w for s, w in zip(self._cpu_samples, weights)) / sum(weights)
-
-        # 采样不够时保持当前状态
         if len(self._cpu_samples) < 3:
             return self._current_status
 
-        # 冷却期内不切换
-        now = time.time()
-        if now - self._last_switch_time < self._cooldown_sec:
-            return self._current_status
+        weights = [i + 1 for i in range(len(self._cpu_samples))]
+        avg = sum(s * w for s, w in zip(self._cpu_samples, weights)) / sum(weights)
 
-        # 状态决策（带滞后）
-        new_status = self._current_status
-
-        if self._current_status == Status.RUNNING:
-            # 运行中 → CPU 降到 _exit_running 以下才考虑切换
-            if weighted_avg < self._exit_running:
-                new_status = Status.WAITING
-        elif self._current_status == Status.WAITING:
-            # 等待中 → CPU 升到 _exit_waiting 以上才切运行，否则保持
-            if weighted_avg > self._exit_waiting:
-                new_status = Status.RUNNING
-            elif weighted_avg > self._enter_waiting:
-                new_status = Status.READY
-        elif self._current_status == Status.READY:
-            # 就绪 → CPU 高了切运行，低了切等待
-            if weighted_avg > self._enter_running:
-                new_status = Status.RUNNING
-            elif weighted_avg < self._enter_waiting:
-                new_status = Status.WAITING
-        else:
-            # OFFLINE → 采样够了就进 WAITING
-            new_status = Status.WAITING
-
-        if new_status != self._current_status:
-            self._current_status = new_status
-            self._last_switch_time = now
+        if avg > self._enter_running:
+            self._current_status = Status.RUNNING
+        elif avg < self._enter_waiting:
+            self._current_status = Status.WAITING
 
         return self._current_status
-
-    def _find_claude_processes(self) -> list:
-        procs = []
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-            try:
-                name = proc.info['name'] or ''
-                cmdline = ' '.join(proc.info['cmdline'] or [])
-                if 'claude' in (name + cmdline).lower():
-                    if 'code' not in name.lower() and 'electron' not in name.lower():
-                        procs.append(proc)
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-        return procs
 
 
 # ── 红绿灯窗口 ─────────────────────────────────────────────
@@ -305,6 +301,13 @@ class TrafficLight(QWidget):
         size_action.setDefaultWidget(size_slider)
         menu.addAction(size_action)
 
+        menu.addSeparator()
+
+        # 安装 Hook
+        hook_act = QAction("安装 Hook (提升精准度)", self)
+        hook_act.triggered.connect(self._install_hooks)
+        menu.addAction(hook_act)
+
         # 置顶
         topmost_act = QAction("窗口置顶", self)
         topmost_act.setCheckable(True)
@@ -347,6 +350,25 @@ class TrafficLight(QWidget):
             flags |= Qt.WindowStaysOnTopHint
         self.setWindowFlags(flags)
         self.show()
+
+    def _install_hooks(self):
+        """安装 Claude Code hooks"""
+        import subprocess
+        hook_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hooks", "setup-hooks.py")
+        if os.path.exists(hook_script):
+            result = subprocess.run(
+                [sys.executable, hook_script],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                from PyQt5.QtWidgets import QMessageBox
+                QMessageBox.information(self, "Hook 安装", result.stdout)
+            else:
+                from PyQt5.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Hook 安装失败", result.stderr)
+        else:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "错误", f"找不到 hook 脚本:\n{hook_script}")
 
     def _quit(self):
         self._tray.hide()
